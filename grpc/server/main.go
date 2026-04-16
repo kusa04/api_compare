@@ -27,8 +27,8 @@ func newUserServer() *userServer {
 		users:  make(map[int32]*pb.UserResponse),
 		nextID: 1,
 	}
-	// 初期データ
-	for i := 0; i < 3; i++ {
+	// 初期データ（ベンチマーク用に100件）
+	for i := 0; i < 100; i++ {
 		s.users[s.nextID] = &pb.UserResponse{
 			Id:    s.nextID,
 			Name:  fmt.Sprintf("User %d", s.nextID),

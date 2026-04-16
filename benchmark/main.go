@@ -66,7 +66,7 @@ func benchGRPCSingle(n int) Result {
 
 func benchRESTSingle(n int) Result {
 	httpClient := &http.Client{}
-	resp, _ := httpClient.Get("http://localhost:8080/user?id=1")
+	resp, _ := httpClient.Get("http://localhost:8080/users/1")
 	if resp != nil {
 		resp.Body.Close()
 	}
@@ -75,7 +75,7 @@ func benchRESTSingle(n int) Result {
 	start := time.Now()
 	for i := 0; i < n; i++ {
 		t := time.Now()
-		resp, err := httpClient.Get("http://localhost:8080/user?id=1")
+		resp, err := httpClient.Get("http://localhost:8080/users/1")
 		durations[i] = time.Since(t)
 		if err != nil {
 			panic(err)
@@ -129,13 +129,13 @@ func benchRESTList(n int) Result {
 	for i := 0; i < n; i++ {
 		t := time.Now()
 		resp, err := httpClient.Get("http://localhost:8080/users")
-		durations[i] = time.Since(t)
 		if err != nil {
 			panic(err)
 		}
 		var users []User
 		json.NewDecoder(resp.Body).Decode(&users)
 		resp.Body.Close()
+		durations[i] = time.Since(t)
 	}
 	return calcResult(durations, time.Since(start))
 }
@@ -181,7 +181,7 @@ func benchGRPCConcurrent(n int, concurrency int) Result {
 
 func benchRESTConcurrent(n int, concurrency int) Result {
 	httpClient := &http.Client{}
-	resp, _ := httpClient.Get("http://localhost:8080/user?id=1")
+	resp, _ := httpClient.Get("http://localhost:8080/users/1")
 	if resp != nil {
 		resp.Body.Close()
 	}
@@ -199,7 +199,7 @@ func benchRESTConcurrent(n int, concurrency int) Result {
 			defer wg.Done()
 			defer func() { <-sem }()
 			t := time.Now()
-			resp, err := httpClient.Get("http://localhost:8080/user?id=1")
+			resp, err := httpClient.Get("http://localhost:8080/users/1")
 			d := time.Since(t)
 			if err != nil {
 				panic(err)

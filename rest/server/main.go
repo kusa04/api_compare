@@ -27,7 +27,7 @@ var db *store
 
 func init() {
 	db = &store{users: make(map[int]*User), nextID: 1}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 100; i++ {
 		db.users[db.nextID] = &User{
 			ID:    db.nextID,
 			Name:  fmt.Sprintf("User %d", db.nextID),
