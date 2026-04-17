@@ -20,24 +20,32 @@ func doJSON(method, url string, body any, result any) *http.Response {
 	var err error
 
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			log.Fatalf("json.Marshal failed: %v", err)
+		}
 		req, err = http.NewRequest(method, url, bytes.NewReader(b))
+		if err != nil {
+			log.Fatalf("http.NewRequest failed: %v", err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 	} else {
 		req, err = http.NewRequest(method, url, nil)
-	}
-	if err != nil {
-		log.Fatal(err)
+		if err != nil {
+			log.Fatalf("http.NewRequest failed: %v", err)
+		}
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if result != nil {
-		json.NewDecoder(resp.Body).Decode(result)
+		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+			log.Fatalf("json decode failed: %v", err)
+		}
 	}
 	return resp
 }

@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"sort"
 	"sync"
 	"time"
 
@@ -16,26 +15,34 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// Result はベンチマーク1セットの集計値を表す。
+//   - Elapsed: 全リクエスト完了までの wall clock 時間（スループット指標）
+//   - Average: 個別リクエスト所要時間の平均（レイテンシ指標）
 type Result struct {
-	Total   time.Duration
+	Elapsed time.Duration
 	Average time.Duration
 	Min     time.Duration
 	Max     time.Duration
-	P50     time.Duration
-	P99     time.Duration
 }
 
-func calcResult(durations []time.Duration, total time.Duration) Result {
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
-
+func calcResult(durations []time.Duration, elapsed time.Duration) Result {
 	n := len(durations)
+	sum := time.Duration(0)
+	min, max := durations[0], durations[0]
+	for _, d := range durations {
+		sum += d
+		if d < min {
+			min = d
+		}
+		if d > max {
+			max = d
+		}
+	}
 	return Result{
-		Total:   total,
-		Average: total / time.Duration(n),
-		Min:     durations[0],
-		Max:     durations[n-1],
-		P50:     durations[n*50/100],
-		P99:     durations[n*99/100],
+		Elapsed: elapsed,
+		Average: sum / time.Duration(n),
+		Min:     min,
+		Max:     max,
 	}
 }
 
@@ -49,26 +56,39 @@ func benchGRPCSingle(n int) Result {
 	defer conn.Close()
 
 	client := pb.NewUserServiceClient(conn)
-	client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
+	// ウォームアップ
+	if _, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1}); err != nil {
+		panic(err)
+	}
 
 	durations := make([]time.Duration, n)
 	start := time.Now()
 	for i := 0; i < n; i++ {
 		t := time.Now()
-		_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
-		durations[i] = time.Since(t)
+		resp, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
 		if err != nil {
 			panic(err)
 		}
+		_ = resp.Id // 戻り値を参照（REST 側と対称性を保つ）
+		durations[i] = time.Since(t)
 	}
 	return calcResult(durations, time.Since(start))
 }
 
 func benchRESTSingle(n int) Result {
 	httpClient := &http.Client{}
-	resp, _ := httpClient.Get("http://localhost:8080/users/1")
-	if resp != nil {
-		resp.Body.Close()
+	// ウォームアップ
+	resp, err := httpClient.Get("http://localhost:8080/users/1")
+	if err != nil {
+		panic(err)
+	}
+	resp.Body.Close()
+
+	type User struct {
+		ID    int    `json:"id"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Age   int    `json:"age"`
 	}
 
 	durations := make([]time.Duration, n)
@@ -76,11 +96,15 @@ func benchRESTSingle(n int) Result {
 	for i := 0; i < n; i++ {
 		t := time.Now()
 		resp, err := httpClient.Get("http://localhost:8080/users/1")
-		durations[i] = time.Since(t)
 		if err != nil {
 			panic(err)
 		}
+		var u User
+		if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+			panic(err)
+		}
 		resp.Body.Close()
+		durations[i] = time.Since(t)
 	}
 	return calcResult(durations, time.Since(start))
 }
@@ -95,27 +119,33 @@ func benchGRPCList(n int) Result {
 	defer conn.Close()
 
 	client := pb.NewUserServiceClient(conn)
-	client.ListUsers(context.Background(), &pb.ListUsersRequest{Count: 100})
+	// ウォームアップ
+	if _, err := client.ListUsers(context.Background(), &pb.ListUsersRequest{Count: 100}); err != nil {
+		panic(err)
+	}
 
 	durations := make([]time.Duration, n)
 	start := time.Now()
 	for i := 0; i < n; i++ {
 		t := time.Now()
-		_, err := client.ListUsers(context.Background(), &pb.ListUsersRequest{Count: 100})
-		durations[i] = time.Since(t)
+		resp, err := client.ListUsers(context.Background(), &pb.ListUsersRequest{Count: 100})
 		if err != nil {
 			panic(err)
 		}
+		_ = resp.Users // 戻り値を参照（REST 側のデコードと対称性を保つ）
+		durations[i] = time.Since(t)
 	}
 	return calcResult(durations, time.Since(start))
 }
 
 func benchRESTList(n int) Result {
 	httpClient := &http.Client{}
-	resp, _ := httpClient.Get("http://localhost:8080/users")
-	if resp != nil {
-		resp.Body.Close()
+	// ウォームアップ
+	resp, err := httpClient.Get("http://localhost:8080/users")
+	if err != nil {
+		panic(err)
 	}
+	resp.Body.Close()
 
 	type User struct {
 		ID    int    `json:"id"`
@@ -133,7 +163,9 @@ func benchRESTList(n int) Result {
 			panic(err)
 		}
 		var users []User
-		json.NewDecoder(resp.Body).Decode(&users)
+		if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+			panic(err)
+		}
 		resp.Body.Close()
 		durations[i] = time.Since(t)
 	}
@@ -150,10 +182,12 @@ func benchGRPCConcurrent(n int, concurrency int) Result {
 	defer conn.Close()
 
 	client := pb.NewUserServiceClient(conn)
-	client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
+	// ウォームアップ
+	if _, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1}); err != nil {
+		panic(err)
+	}
 
 	durations := make([]time.Duration, n)
-	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
 
@@ -165,14 +199,12 @@ func benchGRPCConcurrent(n int, concurrency int) Result {
 			defer wg.Done()
 			defer func() { <-sem }()
 			t := time.Now()
-			_, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
-			d := time.Since(t)
+			resp, err := client.GetUser(context.Background(), &pb.GetUserRequest{Id: 1})
 			if err != nil {
 				panic(err)
 			}
-			mu.Lock()
-			durations[idx] = d
-			mu.Unlock()
+			_ = resp.Id
+			durations[idx] = time.Since(t)
 		}(i)
 	}
 	wg.Wait()
@@ -181,13 +213,21 @@ func benchGRPCConcurrent(n int, concurrency int) Result {
 
 func benchRESTConcurrent(n int, concurrency int) Result {
 	httpClient := &http.Client{}
-	resp, _ := httpClient.Get("http://localhost:8080/users/1")
-	if resp != nil {
-		resp.Body.Close()
+	// ウォームアップ
+	resp, err := httpClient.Get("http://localhost:8080/users/1")
+	if err != nil {
+		panic(err)
+	}
+	resp.Body.Close()
+
+	type User struct {
+		ID    int    `json:"id"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Age   int    `json:"age"`
 	}
 
 	durations := make([]time.Duration, n)
-	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
 
@@ -200,14 +240,15 @@ func benchRESTConcurrent(n int, concurrency int) Result {
 			defer func() { <-sem }()
 			t := time.Now()
 			resp, err := httpClient.Get("http://localhost:8080/users/1")
-			d := time.Since(t)
 			if err != nil {
 				panic(err)
 			}
+			var u User
+			if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+				panic(err)
+			}
 			resp.Body.Close()
-			mu.Lock()
-			durations[idx] = d
-			mu.Unlock()
+			durations[idx] = time.Since(t)
 		}(i)
 	}
 	wg.Wait()
@@ -218,19 +259,17 @@ func benchRESTConcurrent(n int, concurrency int) Result {
 
 func printResult(label string, grpcR, restR Result) {
 	fmt.Printf("\n### %s ###\n\n", label)
-	fmt.Printf("%-12s %15s %15s\n", "", "gRPC", "REST")
-	fmt.Printf("%-12s %15s %15s\n", "----------", "----------", "----------")
-	fmt.Printf("%-12s %15s %15s\n", "合計", grpcR.Total, restR.Total)
-	fmt.Printf("%-12s %15s %15s\n", "平均", grpcR.Average, restR.Average)
-	fmt.Printf("%-12s %15s %15s\n", "最小", grpcR.Min, restR.Min)
-	fmt.Printf("%-12s %15s %15s\n", "最大", grpcR.Max, restR.Max)
-	fmt.Printf("%-12s %15s %15s\n", "P50", grpcR.P50, restR.P50)
-	fmt.Printf("%-12s %15s %15s\n", "P99", grpcR.P99, restR.P99)
+	fmt.Printf("%-16s %15s %15s\n", "", "gRPC", "REST")
+	fmt.Printf("%-16s %15s %15s\n", "----------", "----------", "----------")
+	fmt.Printf("%-16s %15s %15s\n", "経過時間(全体)", grpcR.Elapsed, restR.Elapsed)
+	fmt.Printf("%-16s %15s %15s\n", "平均(1件あたり)", grpcR.Average, restR.Average)
+	fmt.Printf("%-16s %15s %15s\n", "最小", grpcR.Min, restR.Min)
+	fmt.Printf("%-16s %15s %15s\n", "最大", grpcR.Max, restR.Max)
 
 	if grpcR.Average < restR.Average {
-		fmt.Printf("\n→ gRPC が %.2f 倍高速\n", float64(restR.Average)/float64(grpcR.Average))
+		fmt.Printf("\n→ gRPC が平均レイテンシで %.2f 倍高速\n", float64(restR.Average)/float64(grpcR.Average))
 	} else {
-		fmt.Printf("\n→ REST が %.2f 倍高速\n", float64(grpcR.Average)/float64(restR.Average))
+		fmt.Printf("\n→ REST が平均レイテンシで %.2f 倍高速\n", float64(grpcR.Average)/float64(restR.Average))
 	}
 }
 
