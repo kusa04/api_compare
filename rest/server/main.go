@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +19,7 @@ type User struct {
 }
 
 type store struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	users  map[int]*User
 	nextID int
 }
@@ -44,19 +45,28 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// GET /users       → 一覧 (検索: ?name=xxx)
+// GET /users       → 一覧 (検索: ?name=xxx, 件数制限: ?limit=N)
 // POST /users      → 作成
 func usersHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		db.mu.Lock()
-		defer db.mu.Unlock()
+		db.mu.RLock()
+		defer db.mu.RUnlock()
 
 		nameQuery := r.URL.Query().Get("name")
-		var results []User
+		results := make([]User, 0, len(db.users))
 		for _, u := range db.users {
 			if nameQuery == "" || strings.Contains(strings.ToLower(u.Name), strings.ToLower(nameQuery)) {
 				results = append(results, *u)
+			}
+		}
+		// ID 昇順で安定したレスポンスを返す
+		sort.Slice(results, func(i, j int) bool { return results[i].ID < results[j].ID })
+
+		// ?limit=N が指定され、正の値かつ全件数より小さければ先頭 N 件に絞る
+		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+			if limit, err := strconv.Atoi(limitStr); err == nil && limit > 0 && limit < len(results) {
+				results = results[:limit]
 			}
 		}
 		writeJSON(w, http.StatusOK, results)
@@ -101,9 +111,9 @@ func userHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		db.mu.Lock()
+		db.mu.RLock()
 		user, ok := db.users[id]
-		db.mu.Unlock()
+		db.mu.RUnlock()
 		if !ok {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -151,13 +161,13 @@ func userHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	// REST のルーティング: リソース（名詞） + HTTPメソッド（動詞）
-	//   GET    /users        → 一覧・検索
+	//   GET    /users        → 一覧・検索（?name=, ?limit=）
 	//   POST   /users        → 作成
 	//   GET    /users/{id}   → 取得
 	//   PUT    /users/{id}   → 更新
 	//   DELETE /users/{id}   → 削除
-	http.HandleFunc("/users", usersHandler)   // コレクション
-	http.HandleFunc("/users/", userHandler)   // 個別リソース
+	http.HandleFunc("/users", usersHandler) // コレクション
+	http.HandleFunc("/users/", userHandler) // 個別リソース
 
 	fmt.Println("REST server listening on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {

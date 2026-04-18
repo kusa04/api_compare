@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 
@@ -17,7 +18,7 @@ import (
 
 type userServer struct {
 	pb.UnimplementedUserServiceServer
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	users  map[int32]*pb.UserResponse
 	nextID int32
 }
@@ -41,8 +42,8 @@ func newUserServer() *userServer {
 }
 
 func (s *userServer) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.UserResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	user, ok := s.users[req.Id]
 	if !ok {
@@ -52,12 +53,19 @@ func (s *userServer) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.U
 }
 
 func (s *userServer) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
+	// ID 昇順で安定したレスポンスを返す
 	users := make([]*pb.UserResponse, 0, len(s.users))
 	for _, u := range s.users {
 		users = append(users, u)
+	}
+	sort.Slice(users, func(i, j int) bool { return users[i].Id < users[j].Id })
+
+	// Count が正なら先頭 N 件に絞る（0 や負値は「全件」とみなす）
+	if req.Count > 0 && int(req.Count) < len(users) {
+		users = users[:req.Count]
 	}
 	return &pb.ListUsersResponse{Users: users}, nil
 }
@@ -103,8 +111,8 @@ func (s *userServer) DeleteUser(ctx context.Context, req *pb.DeleteUserRequest) 
 }
 
 func (s *userServer) SearchUsers(ctx context.Context, req *pb.SearchUsersRequest) (*pb.ListUsersResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var results []*pb.UserResponse
 	for _, u := range s.users {
